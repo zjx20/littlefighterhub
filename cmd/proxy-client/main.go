@@ -70,7 +70,7 @@ const (
 	// Time allowed to read the next pong message from the peer.
 	pongWait = 10 * time.Second
 	// Send pings to peer with this period. Must be less than pongWait.
-	pingPeriod = (pongWait * 9) / 10
+	pingPeriod = (pongWait * 5) / 10
 )
 
 // runHostMode runs the client that connects to the game server.
@@ -84,13 +84,6 @@ func runHostMode(u url.URL, gameAddr string) {
 	}
 	defer controlConn.Close()
 
-	// Setup pong handler to detect dead connection
-	controlConn.SetReadDeadline(time.Now().Add(pongWait))
-	controlConn.SetPongHandler(func(string) error {
-		controlConn.SetReadDeadline(time.Now().Add(pongWait))
-		return nil
-	})
-
 	// Register as host
 	registerMsg, _ := json.Marshal(Message{Type: "register_host"})
 	if err := controlConn.WriteMessage(websocket.TextMessage, registerMsg); err != nil {
@@ -100,26 +93,36 @@ func runHostMode(u url.URL, gameAddr string) {
 
 	// Listen for new peer notifications
 	for {
-		_, msg, err := controlConn.ReadMessage()
+		controlConn.SetReadDeadline(time.Now().Add(pongWait))
+		_, p, err := controlConn.ReadMessage()
 		if err != nil {
 			log.Printf("Control connection closed: %v", err)
 			return
 		}
 
-		var message Message
-		if err := json.Unmarshal(msg, &message); err != nil {
+		var msg Message
+		if err := json.Unmarshal(p, &msg); err != nil {
 			log.Printf("Error unmarshaling control message: %v", err)
 			continue
 		}
 
-		if message.Type == "new_peer" {
+		switch msg.Type {
+		case "new_peer":
 			var payload NewPeerPayload
-			if err := json.Unmarshal(message.Payload, &payload); err != nil {
+			if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 				log.Printf("Error unmarshaling new_peer payload: %v", err)
 				continue
 			}
 			log.Printf("Received notification for new peer: %s", payload.PeerID)
 			go handlePeerForHost(u, gameAddr, payload.PeerID)
+		case "ping":
+			// Respond to server's ping
+			pongMsg, _ := json.Marshal(Message{Type: "pong"})
+			controlConn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := controlConn.WriteMessage(websocket.TextMessage, pongMsg); err != nil {
+				log.Printf("Error sending pong: %v", err)
+				return
+			}
 		}
 	}
 }
@@ -134,13 +137,6 @@ func handlePeerForHost(u url.URL, gameAddr, peerID string) {
 		return
 	}
 	defer dataConn.Close()
-
-	// Setup pong handler to detect dead connection
-	dataConn.SetReadDeadline(time.Now().Add(pongWait))
-	dataConn.SetPongHandler(func(string) error {
-		dataConn.SetReadDeadline(time.Now().Add(pongWait))
-		return nil
-	})
 
 	// 2. Send data_conn message to pair with peer
 	payload, _ := json.Marshal(NewPeerPayload{PeerID: peerID})
@@ -199,13 +195,6 @@ func handleGameConnectionForPeer(gameConn net.Conn, u url.URL) {
 	}
 	defer wsConn.Close()
 
-	// Setup pong handler to detect dead connection
-	wsConn.SetReadDeadline(time.Now().Add(pongWait))
-	wsConn.SetPongHandler(func(string) error {
-		wsConn.SetReadDeadline(time.Now().Add(pongWait))
-		return nil
-	})
-
 	log.Printf("Successfully connected to proxy server.")
 
 	var wg sync.WaitGroup
@@ -234,14 +223,28 @@ func forwardToWS(src net.Conn, dst *websocket.Conn, wg *sync.WaitGroup) {
 func forwardToTCP(src *websocket.Conn, dst net.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for {
-		msgType, msg, err := src.ReadMessage()
+		src.SetReadDeadline(time.Now().Add(pongWait))
+		msgType, p, err := src.ReadMessage()
 		if err != nil {
+			log.Printf("forwardToTCP: read error: %v", err)
 			dst.Close()
 			break
 		}
+
 		if msgType == websocket.BinaryMessage {
-			if _, err := dst.Write(msg); err != nil {
+			if _, err := dst.Write(p); err != nil {
+				log.Printf("forwardToTCP: write error: %v", err)
 				break
+			}
+		} else if msgType == websocket.TextMessage {
+			var msg Message
+			if err := json.Unmarshal(p, &msg); err == nil && msg.Type == "ping" {
+				pongMsg, _ := json.Marshal(Message{Type: "pong"})
+				src.SetWriteDeadline(time.Now().Add(writeWait))
+				if err := src.WriteMessage(websocket.TextMessage, pongMsg); err != nil {
+					log.Printf("forwardToTCP: error sending pong: %v", err)
+					break
+				}
 			}
 		}
 	}

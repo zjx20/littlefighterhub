@@ -96,35 +96,43 @@ func (cm *ConnManager) registerHost(conn *websocket.Conn) {
 	cm.connLock.Unlock()
 	log.Println("Host registered successfully.")
 
-	// Setup pong handler for the control connection
-	conn.SetReadDeadline(time.Now().Add(pongWait))
-	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(pongWait))
-		return nil
-	})
-
-	// Goroutine to send pings on the control connection
+	// Goroutine to send application-level pings
 	go func() {
 		ticker := time.NewTicker(pingPeriod)
 		defer ticker.Stop()
+		pingMsg, _ := json.Marshal(Message{Type: "ping"})
+
 		for range ticker.C {
-			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				log.Println("Failed to ping host control connection, assuming it's dead.")
-				conn.Close() // This will cause the ReadMessage loop below to exit
+			conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := conn.WriteMessage(websocket.TextMessage, pingMsg); err != nil {
+				log.Println("Failed to send app-level ping to host, assuming it's dead.")
+				conn.Close()
 				return
 			}
 		}
 	}()
 
-	// Keep the host control connection alive by reading from it.
+	// Keep the host control connection alive by reading messages.
 	for {
-		if _, _, err := conn.ReadMessage(); err != nil {
+		conn.SetReadDeadline(time.Now().Add(pongWait))
+		msgType, p, err := conn.ReadMessage()
+		if err != nil {
 			log.Printf("Host control connection closed: %v", err)
 			cm.connLock.Lock()
 			cm.hostConn = nil
 			cm.connLock.Unlock()
 			break
 		}
+
+		if msgType == websocket.TextMessage {
+			var msg Message
+			if err := json.Unmarshal(p, &msg); err == nil && msg.Type == "pong" {
+				// It's a pong, deadline is reset by the next loop iteration. Continue.
+				continue
+			}
+		}
+		// Any other message on the control channel is unexpected.
+		log.Printf("Received unexpected message on host control channel: %s", p)
 	}
 }
 
@@ -172,6 +180,11 @@ func (cm *ConnManager) pairConnections(peerID string, hostDataConn *websocket.Co
 	cm.connLock.Unlock()
 
 	log.Printf("Pairing host data connection with peer %s", peerID)
+	// Start application-level pinger for both data connections
+	go appPinger(hostDataConn)
+	go appPinger(peerConn)
+
+	// Start forwarding binary data
 	go forward(hostDataConn, peerConn, "Host -> Peer ("+peerID+")")
 	go forward(peerConn, hostDataConn, "Peer -> Host ("+peerID+")")
 }
@@ -206,53 +219,47 @@ const (
 	// Time allowed to read the next pong message from the peer.
 	pongWait = 10 * time.Second
 	// Send pings to peer with this period. Must be less than pongWait.
-	pingPeriod = (pongWait * 9) / 10
+	pingPeriod = (pongWait * 5) / 10
 )
 
-// forward copies messages from src to dst.
-func forward(src, dst *websocket.Conn, direction string) {
-	// Setup ping ticker
+// appPinger sends application-level pings on a connection.
+func appPinger(conn *websocket.Conn) {
 	ticker := time.NewTicker(pingPeriod)
+	defer ticker.Stop()
+	pingMsg, _ := json.Marshal(Message{Type: "ping"})
+
+	for range ticker.C {
+		conn.SetWriteDeadline(time.Now().Add(writeWait))
+		if err := conn.WriteMessage(websocket.TextMessage, pingMsg); err != nil {
+			log.Printf("Pinger: closing connection due to write error: %v", err)
+			conn.Close()
+			return
+		}
+	}
+}
+
+// forward only forwards binary messages from src to dst.
+func forward(src, dst *websocket.Conn, direction string) {
 	defer func() {
-		ticker.Stop()
 		src.Close()
 		dst.Close()
 		log.Printf("Stopped forwarding for direction: %s", direction)
 	}()
-
-	// Set a handler for pong messages
-	src.SetReadDeadline(time.Now().Add(pongWait))
-	src.SetPongHandler(func(string) error {
-		src.SetReadDeadline(time.Now().Add(pongWait))
-		return nil
-	})
-
-	// Read pump
-	go func() {
-		for {
-			msgType, msg, err := src.ReadMessage()
-			if err != nil {
-				log.Printf("Error reading from %s: %v", direction, err)
-				// Closing the destination connection will cause the other forwarder to exit.
-				dst.Close()
-				break
-			}
+	for {
+		// Note: The read deadline is set by the client's pong response.
+		// Here we just read. If the client doesn't respond to our pings, this read will time out.
+		msgType, msg, err := src.ReadMessage()
+		if err != nil {
+			log.Printf("Forwarder read error on %s: %v", direction, err)
+			break
+		}
+		// We only forward game data, which should be binary.
+		// Text messages are for control (ping/pong), which are handled by the client, not forwarded.
+		if msgType == websocket.BinaryMessage {
 			dst.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := dst.WriteMessage(msgType, msg); err != nil {
-				log.Printf("Error writing to %s: %v", direction, err)
+				log.Printf("Forwarder write error on %s: %v", direction, err)
 				break
-			}
-		}
-	}()
-
-	// Write pump (for pings)
-	for {
-		select {
-		case <-ticker.C:
-			src.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := src.WriteMessage(websocket.PingMessage, nil); err != nil {
-				log.Printf("Error sending ping for %s: %v", direction, err)
-				return
 			}
 		}
 	}
