@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -24,21 +25,53 @@ type NewPeerPayload struct {
 
 func main() {
 	mode := flag.String("mode", "peer", "Set mode to 'host' or 'peer'")
-	serverAddr := flag.String("server", "localhost:28080", "Proxy server address")
+	serverAddr := flag.String("server", "localhost:28080", "Proxy server address (e.g., wss://your.server.com)")
 	gameAddr := flag.String("game", "localhost:8080", "Game server address (for host mode)")
 	localAddr := flag.String("local", "localhost:8081", "Local address for game client to connect (for peer mode)")
 	flag.Parse()
 
 	log.Printf("Starting proxy client in %s mode", *mode)
 
+	// Parse the server address
+	u, err := url.Parse(*serverAddr)
+	if err != nil {
+		log.Fatalf("Invalid server URL: %v", err)
+	}
+
+	// If scheme is missing, prepend ws:// and re-parse
+	if u.Scheme == "" {
+		u, err = url.Parse("ws://" + *serverAddr)
+		if err != nil {
+			log.Fatalf("Invalid server URL: %v", err)
+		}
+	}
+
+	// Allow http/https as aliases for ws/wss
+	if u.Scheme == "https" {
+		u.Scheme = "wss"
+	} else if u.Scheme == "http" {
+		u.Scheme = "ws"
+	}
+
+	// Construct the final URL for the specific mode
+	serverURL := *u // Make a copy
 	if *mode == "host" {
-		serverURL := url.URL{Scheme: "ws", Host: *serverAddr, Path: "/ws-host"}
+		serverURL.Path = "/ws-host"
 		runHostMode(serverURL, *gameAddr)
 	} else {
-		serverURL := url.URL{Scheme: "ws", Host: *serverAddr, Path: "/ws-peer"}
+		serverURL.Path = "/ws-peer"
 		runPeerMode(serverURL, *localAddr)
 	}
 }
+
+const (
+	// Time allowed to write a message to the peer.
+	writeWait = 10 * time.Second
+	// Time allowed to read the next pong message from the peer.
+	pongWait = 10 * time.Second
+	// Send pings to peer with this period. Must be less than pongWait.
+	pingPeriod = (pongWait * 9) / 10
+)
 
 // runHostMode runs the client that connects to the game server.
 func runHostMode(u url.URL, gameAddr string) {
@@ -50,6 +83,13 @@ func runHostMode(u url.URL, gameAddr string) {
 		log.Fatalf("Failed to establish control connection: %v", err)
 	}
 	defer controlConn.Close()
+
+	// Setup pong handler to detect dead connection
+	controlConn.SetReadDeadline(time.Now().Add(pongWait))
+	controlConn.SetPongHandler(func(string) error {
+		controlConn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
 
 	// Register as host
 	registerMsg, _ := json.Marshal(Message{Type: "register_host"})
@@ -94,6 +134,13 @@ func handlePeerForHost(u url.URL, gameAddr, peerID string) {
 		return
 	}
 	defer dataConn.Close()
+
+	// Setup pong handler to detect dead connection
+	dataConn.SetReadDeadline(time.Now().Add(pongWait))
+	dataConn.SetPongHandler(func(string) error {
+		dataConn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
 
 	// 2. Send data_conn message to pair with peer
 	payload, _ := json.Marshal(NewPeerPayload{PeerID: peerID})
@@ -151,6 +198,14 @@ func handleGameConnectionForPeer(gameConn net.Conn, u url.URL) {
 		return
 	}
 	defer wsConn.Close()
+
+	// Setup pong handler to detect dead connection
+	wsConn.SetReadDeadline(time.Now().Add(pongWait))
+	wsConn.SetPongHandler(func(string) error {
+		wsConn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
+
 	log.Printf("Successfully connected to proxy server.")
 
 	var wg sync.WaitGroup

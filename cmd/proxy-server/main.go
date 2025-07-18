@@ -95,8 +95,28 @@ func (cm *ConnManager) registerHost(conn *websocket.Conn) {
 	cm.hostConn = conn
 	cm.connLock.Unlock()
 	log.Println("Host registered successfully.")
+
+	// Setup pong handler for the control connection
+	conn.SetReadDeadline(time.Now().Add(pongWait))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
+
+	// Goroutine to send pings on the control connection
+	go func() {
+		ticker := time.NewTicker(pingPeriod)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				log.Println("Failed to ping host control connection, assuming it's dead.")
+				conn.Close() // This will cause the ReadMessage loop below to exit
+				return
+			}
+		}
+	}()
+
 	// Keep the host control connection alive by reading from it.
-	// This loop will break if the host disconnects.
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {
 			log.Printf("Host control connection closed: %v", err)
@@ -180,21 +200,60 @@ func main() {
 	}
 }
 
+const (
+	// Time allowed to write a message to the peer.
+	writeWait = 10 * time.Second
+	// Time allowed to read the next pong message from the peer.
+	pongWait = 10 * time.Second
+	// Send pings to peer with this period. Must be less than pongWait.
+	pingPeriod = (pongWait * 9) / 10
+)
+
 // forward copies messages from src to dst.
 func forward(src, dst *websocket.Conn, direction string) {
+	// Setup ping ticker
+	ticker := time.NewTicker(pingPeriod)
 	defer func() {
+		ticker.Stop()
 		src.Close()
 		dst.Close()
 		log.Printf("Stopped forwarding for direction: %s", direction)
 	}()
 
-	for {
-		msgType, msg, err := src.ReadMessage()
-		if err != nil {
-			break
+	// Set a handler for pong messages
+	src.SetReadDeadline(time.Now().Add(pongWait))
+	src.SetPongHandler(func(string) error {
+		src.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
+
+	// Read pump
+	go func() {
+		for {
+			msgType, msg, err := src.ReadMessage()
+			if err != nil {
+				log.Printf("Error reading from %s: %v", direction, err)
+				// Closing the destination connection will cause the other forwarder to exit.
+				dst.Close()
+				break
+			}
+			dst.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := dst.WriteMessage(msgType, msg); err != nil {
+				log.Printf("Error writing to %s: %v", direction, err)
+				break
+			}
 		}
-		if err := dst.WriteMessage(msgType, msg); err != nil {
-			break
+	}()
+
+	// Write pump (for pings)
+	for {
+		select {
+		case <-ticker.C:
+			src.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := src.WriteMessage(websocket.PingMessage, nil); err != nil {
+				log.Printf("Error sending ping for %s: %v", direction, err)
+				return
+			}
 		}
 	}
 }

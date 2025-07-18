@@ -7,6 +7,7 @@
 - 每个玩家（包括房主）都在本地运行一个**代理客户端（Proxy Client）**。
 - **主机端**的代理会建立一个到服务端的“控制连接”来接收指令，并为每个新玩家建立独立的“数据连接”。
 - **玩家端**的代理则负责将本地游戏的数据转发到服务端。
+- **心跳机制**: 服务端与客户端之间有基于WebSocket Ping/Pong帧的内置心跳，能保持连接穿透NAT，并及时清理断开的连接。
 
 ## 编译
 
@@ -39,9 +40,9 @@ go build -o proxy-client ./cmd/proxy-client
 2.  然后，在你自己的电脑上运行代理客户端，并指定游戏服务的地址：
     ```bash
     # --mode=host 指定为“主机”模式
-    # --server=你的公网服务器IP:28080 指定代理服务器地址
+    # --server=wss://your-domain.com 或 --server=your-ip:28080
     # --game=127.0.0.1:8080 指定你的游戏服务正在监听的地址和端口
-    ./proxy-client --mode=host --server=你的公网服务器IP:28080 --game=127.0.0.1:8080
+    ./proxy-client --mode=host --server=wss://your-domain.com --game=127.0.0.1:8080
     ```
 
 ### 3. 其他玩家（Peer）启动代理和游戏
@@ -49,9 +50,9 @@ go build -o proxy-client ./cmd/proxy-client
 其他加入游戏的玩家，需要：
 1.  先启动代理客户端，它会在本地监听一个端口（例如 `127.0.0.1:8081`）：
     ```bash
-    # --server=你的公网服务器IP:28080 指定代理服务器地址
+    # --server=wss://your-domain.com 或 --server=your-ip:28080
     # --local=127.0.0.1:8081 客户端会在本地监听这个地址和端口
-    ./proxy-client --mode=peer --server=你的公网服务器IP:28080 --local=127.0.0.1:8081
+    ./proxy-client --mode=peer --server=wss://your-domain.com --local=127.0.0.1:8081
     ```
 2.  然后，启动游戏，在游戏里输入服务器地址时，输入 `--local` 参数指定的地址，即 `127.0.0.1:8081`。
 
@@ -73,13 +74,13 @@ go build -o proxy-client ./cmd/proxy-client
 3.  **终端 C: 启动主机代理**
     ```bash
     # 连接到代理服务，并告知游戏服务在 8080 端口
-    ./proxy-client --mode=host --game=localhost:8080
+    ./proxy-client --mode=host --game=localhost:8080 --server=localhost:28080
     ```
 
 4.  **终端 D: 启动玩家代理**
     ```bash
     # 在 8081 端口监听，等待玩家的游戏来连接
-    ./proxy-client --mode=peer --local=localhost:8081
+    ./proxy-client --mode=peer --local=localhost:8081 --server=localhost:28080
     ```
 
 5.  **终端 E: 模拟玩家的游戏**
@@ -97,6 +98,6 @@ go build -o proxy-client ./cmd/proxy-client
 - `--mode`: 客户端模式。
   - `host`: 主机模式，给游戏房主使用。
   - `peer`: 玩家模式（默认值）。
-- `--server`: 代理服务端的地址。默认为 `localhost:28080`。
+- `--server`: 代理服务端的地址。支持多种格式，如 `your-domain.com`, `your-ip:28080`, `ws://your-ip:28080`, `wss://your-domain.com`。默认为 `localhost:28080`。
 - `--game`: 【仅主机模式】你的游戏服务端监听的地址。默认为 `localhost:8080`。
 - `--local`: 【仅玩家模式】为你的游戏客户端提供的本地监听地址。默认为 `localhost:8081`。
