@@ -7,7 +7,7 @@
 - 每个玩家（包括房主）都在本地运行一个**代理客户端（Proxy Client）**。
 - **主机端**的代理会建立一个到服务端的“控制连接”来接收指令，并为每个新玩家建立独立的“数据连接”。
 - **玩家端**的代理则负责将本地游戏的数据转发到服务端。
-- **心跳机制**: 服务端与客户端之间有基于WebSocket Ping/Pong帧的内置心跳，能保持连接穿透NAT，并及时清理断开的连接。
+- **应用层心跳**: 服务端与客户端之间的所有连接都使用基于JSON文本消息的自定义心跳（`{"type":"ping"}`/`{"type":"pong"}`），以确保在复杂的网络环境下也能保持连接活性，并及时清理断开的连接。
 
 ## 编译
 
@@ -22,6 +22,26 @@ go build -o proxy-client ./cmd/proxy-client
 ```
 
 编译后，你会在项目根目录下看到 `proxy-server` 和 `proxy-client` 两个可执行文件。
+
+### 交叉编译 (Cross-compilation)
+
+Go 语言支持方便的交叉编译。例如，如果你想在 macOS 或 Linux 上为 Windows 编译客户端：
+
+```bash
+# GOOS=windows 指定目标系统为 Windows
+# GOARCH=amd64 指定目标架构为 64-bit
+# -o proxy-client.exe 指定输出文件名为 proxy-client.exe
+GOOS=windows GOARCH=amd64 go build -o proxy-client.exe ./cmd/proxy-client
+```
+
+如果你正在使用 Windows 系统，可以直接使用 `go build` 命令，它会默认生成 `.exe` 文件。
+
+> **注意**: 在 Windows 的 Command Prompt (CMD) 中，设置环境变量的语法不同，你需要分步执行：
+> ```cmd
+> set GOOS=windows
+> set GOARCH=amd64
+> go build -o proxy-client.exe ./cmd/proxy-client
+> ```
 
 ## 如何运行
 
