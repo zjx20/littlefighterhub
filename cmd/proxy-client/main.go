@@ -157,9 +157,10 @@ func handlePeerForHost(u url.URL, gameAddr, peerID string) {
 	log.Printf("[%s] Data channel established. Forwarding data.", peerID)
 	// 4. Forward data
 	var wg sync.WaitGroup
+	var writeMutex sync.Mutex
 	wg.Add(2)
-	go forwardToWS(gameConn, dataConn, &wg)
-	go forwardToTCP(dataConn, gameConn, &wg)
+	go forwardToWS(gameConn, dataConn, &wg, &writeMutex)
+	go forwardToTCP(dataConn, gameConn, &wg, &writeMutex)
 	wg.Wait()
 	log.Printf("[%s] Data channel closed.", peerID)
 }
@@ -198,14 +199,15 @@ func handleGameConnectionForPeer(gameConn net.Conn, u url.URL) {
 	log.Printf("Successfully connected to proxy server.")
 
 	var wg sync.WaitGroup
+	var writeMutex sync.Mutex
 	wg.Add(2)
-	go forwardToWS(gameConn, wsConn, &wg)
-	go forwardToTCP(wsConn, gameConn, &wg)
+	go forwardToWS(gameConn, wsConn, &wg, &writeMutex)
+	go forwardToTCP(wsConn, gameConn, &wg, &writeMutex)
 	wg.Wait()
 	log.Println("Connection closed.")
 }
 
-func forwardToWS(src net.Conn, dst *websocket.Conn, wg *sync.WaitGroup) {
+func forwardToWS(src net.Conn, dst *websocket.Conn, wg *sync.WaitGroup, writeMutex *sync.Mutex) {
 	defer wg.Done()
 	buf := make([]byte, 2048)
 	for {
@@ -214,13 +216,16 @@ func forwardToWS(src net.Conn, dst *websocket.Conn, wg *sync.WaitGroup) {
 			dst.Close()
 			break
 		}
-		if err := dst.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
+		writeMutex.Lock()
+		err = dst.WriteMessage(websocket.BinaryMessage, buf[:n])
+		writeMutex.Unlock()
+		if err != nil {
 			break
 		}
 	}
 }
 
-func forwardToTCP(src *websocket.Conn, dst net.Conn, wg *sync.WaitGroup) {
+func forwardToTCP(src *websocket.Conn, dst net.Conn, wg *sync.WaitGroup, writeMutex *sync.Mutex) {
 	defer wg.Done()
 	for {
 		src.SetReadDeadline(time.Now().Add(pongWait))
@@ -240,8 +245,11 @@ func forwardToTCP(src *websocket.Conn, dst net.Conn, wg *sync.WaitGroup) {
 			var msg Message
 			if err := json.Unmarshal(p, &msg); err == nil && msg.Type == "ping" {
 				pongMsg, _ := json.Marshal(Message{Type: "pong"})
+				writeMutex.Lock()
 				src.SetWriteDeadline(time.Now().Add(writeWait))
-				if err := src.WriteMessage(websocket.TextMessage, pongMsg); err != nil {
+				err := src.WriteMessage(websocket.TextMessage, pongMsg)
+				writeMutex.Unlock()
+				if err != nil {
 					log.Printf("forwardToTCP: error sending pong: %v", err)
 					break
 				}

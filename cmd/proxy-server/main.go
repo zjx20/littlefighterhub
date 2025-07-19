@@ -180,13 +180,16 @@ func (cm *ConnManager) pairConnections(peerID string, hostDataConn *websocket.Co
 	cm.connLock.Unlock()
 
 	log.Printf("Pairing host data connection with peer %s", peerID)
+
+	var hostWriteMutex, peerWriteMutex sync.Mutex
+
 	// Start application-level pinger for both data connections
-	go appPinger(hostDataConn)
-	go appPinger(peerConn)
+	go appPinger(hostDataConn, &hostWriteMutex)
+	go appPinger(peerConn, &peerWriteMutex)
 
 	// Start forwarding binary data
-	go forward(hostDataConn, peerConn, "Host -> Peer ("+peerID+")")
-	go forward(peerConn, hostDataConn, "Peer -> Host ("+peerID+")")
+	go forward(hostDataConn, peerConn, "Host -> Peer ("+peerID+")", &peerWriteMutex)
+	go forward(peerConn, hostDataConn, "Peer -> Host ("+peerID+")", &hostWriteMutex)
 }
 
 // handlePeer is the entry point for peer connections.
@@ -223,14 +226,17 @@ const (
 )
 
 // appPinger sends application-level pings on a connection.
-func appPinger(conn *websocket.Conn) {
+func appPinger(conn *websocket.Conn, writeMutex *sync.Mutex) {
 	ticker := time.NewTicker(pingPeriod)
 	defer ticker.Stop()
 	pingMsg, _ := json.Marshal(Message{Type: "ping"})
 
 	for range ticker.C {
+		writeMutex.Lock()
 		conn.SetWriteDeadline(time.Now().Add(writeWait))
-		if err := conn.WriteMessage(websocket.TextMessage, pingMsg); err != nil {
+		err := conn.WriteMessage(websocket.TextMessage, pingMsg)
+		writeMutex.Unlock()
+		if err != nil {
 			log.Printf("Pinger: closing connection due to write error: %v", err)
 			conn.Close()
 			return
@@ -239,7 +245,7 @@ func appPinger(conn *websocket.Conn) {
 }
 
 // forward only forwards binary messages from src to dst.
-func forward(src, dst *websocket.Conn, direction string) {
+func forward(src, dst *websocket.Conn, direction string, writeMutex *sync.Mutex) {
 	defer func() {
 		src.Close()
 		dst.Close()
@@ -256,8 +262,11 @@ func forward(src, dst *websocket.Conn, direction string) {
 		// We only forward game data, which should be binary.
 		// Text messages are for control (ping/pong), which are handled by the client, not forwarded.
 		if msgType == websocket.BinaryMessage {
+			writeMutex.Lock()
 			dst.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := dst.WriteMessage(msgType, msg); err != nil {
+			err := dst.WriteMessage(msgType, msg)
+			writeMutex.Unlock()
+			if err != nil {
 				log.Printf("Forwarder write error on %s: %v", direction, err)
 				break
 			}
