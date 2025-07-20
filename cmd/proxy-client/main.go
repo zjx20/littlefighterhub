@@ -28,9 +28,10 @@ func main() {
 	serverAddr := flag.String("server", "localhost:28080", "Proxy server address (e.g., wss://your.server.com)")
 	gameAddr := flag.String("game", "localhost:8080", "Game server address (for host mode)")
 	localAddr := flag.String("local", "localhost:8081", "Local address for game client to connect (for peer mode)")
+	roomID := flag.String("room", "default", "Room ID to join")
 	flag.Parse()
 
-	log.Printf("Starting proxy client in %s mode", *mode)
+	log.Printf("Starting proxy client in %s mode for room '%s'", *mode, *roomID)
 
 	// Parse the server address
 	u, err := url.Parse(*serverAddr)
@@ -55,6 +56,10 @@ func main() {
 
 	// Construct the final URL for the specific mode
 	serverURL := *u // Make a copy
+	q := serverURL.Query()
+	q.Set("room", *roomID)
+	serverURL.RawQuery = q.Encode()
+
 	if *mode == "host" {
 		serverURL.Path = "/ws-host"
 		runHostMode(serverURL, *gameAddr)
@@ -73,31 +78,48 @@ const (
 	pingPeriod = (pongWait * 5) / 10
 )
 
-// runHostMode runs the client that connects to the game server.
+// runHostMode runs the client that connects to the game server with auto-reconnect.
 func runHostMode(u url.URL, gameAddr string) {
-	log.Printf("Running in host mode. Control connection to %s", u.String())
+	for {
+		log.Printf("Running in host mode. Attempting control connection to %s", u.String())
 
-	// Establish the main control connection
-	controlConn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
-	if err != nil {
-		log.Fatalf("Failed to establish control connection: %v", err)
+		// Establish the main control connection
+		controlConn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+		if err != nil {
+			log.Printf("Failed to establish control connection: %v. Retrying in 5 seconds...", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		// Register as host
+		registerMsg, _ := json.Marshal(Message{Type: "register_host"})
+		if err := controlConn.WriteMessage(websocket.TextMessage, registerMsg); err != nil {
+			log.Printf("Failed to register as host: %v. Retrying in 5 seconds...", err)
+			controlConn.Close()
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		log.Println("Registered as host. Waiting for new peer notifications...")
+
+		// Listen for new peer notifications
+		err = listenForPeers(controlConn, u, gameAddr)
+		controlConn.Close() // Ensure connection is closed on loop exit
+
+		if err != nil {
+			log.Printf("Control connection lost: %v. Reconnecting...", err)
+		} else {
+			log.Println("Control connection closed gracefully. Reconnecting...")
+		}
+		time.Sleep(5 * time.Second)
 	}
-	defer controlConn.Close()
+}
 
-	// Register as host
-	registerMsg, _ := json.Marshal(Message{Type: "register_host"})
-	if err := controlConn.WriteMessage(websocket.TextMessage, registerMsg); err != nil {
-		log.Fatalf("Failed to register as host: %v", err)
-	}
-	log.Println("Registered as host. Waiting for new peer notifications...")
-
-	// Listen for new peer notifications
+func listenForPeers(controlConn *websocket.Conn, u url.URL, gameAddr string) error {
 	for {
 		controlConn.SetReadDeadline(time.Now().Add(pongWait))
 		_, p, err := controlConn.ReadMessage()
 		if err != nil {
-			log.Printf("Control connection closed: %v", err)
-			return
+			return err
 		}
 
 		var msg Message
@@ -121,7 +143,7 @@ func runHostMode(u url.URL, gameAddr string) {
 			controlConn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := controlConn.WriteMessage(websocket.TextMessage, pongMsg); err != nil {
 				log.Printf("Error sending pong: %v", err)
-				return
+				return err
 			}
 		}
 	}

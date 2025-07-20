@@ -57,22 +57,24 @@ GOOS=windows GOARCH=amd64 go build -o proxy-client.exe ./cmd/proxy-client
 
 作为游戏房主，你需要：
 1.  先启动你的游戏，并使其作为服务端在本地监听（例如 `127.0.0.1:8080`）。
-2.  然后，在你自己的电脑上运行代理客户端，并指定游戏服务的地址：
+2.  然后，在你自己的电脑上运行代理客户端，并指定游戏服务的地址和一个房间ID：
     ```bash
     # --mode=host 指定为“主机”模式
     # --server=wss://your-domain.com 或 --server=your-ip:28080
     # --game=127.0.0.1:8080 指定你的游戏服务正在监听的地址和端口
-    ./proxy-client --mode=host --server=wss://your-domain.com --game=127.0.0.1:8080
+    # --room=my-secret-room 指定一个房间ID，只有使用相同ID的玩家才能加入
+    ./proxy-client --mode=host --server=wss://your-domain.com --game=127.0.0.1:8080 --room=my-secret-room
     ```
 
 ### 3. 其他玩家（Peer）启动代理和游戏
 
 其他加入游戏的玩家，需要：
-1.  先启动代理客户端，它会在本地监听一个端口（例如 `127.0.0.1:8081`）：
+1.  先启动代理客户端，它会在本地监听一个端口（例如 `127.0.0.1:8081`），并使用与房主相同的房间ID：
     ```bash
     # --server=wss://your-domain.com 或 --server=your-ip:28080
     # --local=127.0.0.1:8081 客户端会在本地监听这个地址和端口
-    ./proxy-client --mode=peer --server=wss://your-domain.com --local=127.0.0.1:8081
+    # --room=my-secret-room 必须和房主设置的房间ID一致
+    ./proxy-client --mode=peer --server=wss://your-domain.com --local=127.0.0.1:8081 --room=my-secret-room
     ```
 2.  然后，启动游戏，在游戏里输入服务器地址时，输入 `--local` 参数指定的地址，即 `127.0.0.1:8081`。
 
@@ -119,5 +121,6 @@ GOOS=windows GOARCH=amd64 go build -o proxy-client.exe ./cmd/proxy-client
   - `host`: 主机模式，给游戏房主使用。
   - `peer`: 玩家模式（默认值）。
 - `--server`: 代理服务端的地址。支持多种格式，如 `your-domain.com`, `your-ip:28080`, `ws://your-ip:28080`, `wss://your-domain.com`。默认为 `localhost:28080`。
+- `--room`: 指定一个房间ID（任意字符串）。只有使用相同房间ID的客户端才会被分配到同一个逻辑房间中进行通信。默认为 `default`。
 - `--game`: 【仅主机模式】你的游戏服务端监听的地址。默认为 `localhost:8080`。
 - `--local`: 【仅玩家模式】为你的游戏客户端提供的本地监听地址。默认为 `localhost:8081`。

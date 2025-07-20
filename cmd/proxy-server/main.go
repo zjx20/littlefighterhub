@@ -25,76 +25,139 @@ type NewPeerPayload struct {
 	PeerID string `json:"peer_id"`
 }
 
-// ConnManager handles all connection logic.
-type ConnManager struct {
-	hostConn *websocket.Conn
-	peers    map[string]*websocket.Conn
-	connLock sync.Mutex
+// Room holds the state for a single game room.
+type Room struct {
+	hostConn      *websocket.Conn
+	peers         map[string]*websocket.Conn
+	lock          sync.Mutex // Protects access to hostConn and peers map
+	hostWriteLock sync.Mutex // Protects writes to hostConn
 }
 
-func NewConnManager() *ConnManager {
-	return &ConnManager{
+func NewRoom() *Room {
+	return &Room{
 		peers: make(map[string]*websocket.Conn),
 	}
 }
 
-// handleWebSocket is the main entry point for all new connections.
+// ConnManager handles all rooms.
+type ConnManager struct {
+	rooms map[string]*Room
+	lock  sync.Mutex
+}
+
+func NewConnManager() *ConnManager {
+	return &ConnManager{
+		rooms: make(map[string]*Room),
+	}
+}
+
+// getOrCreateRoom finds a room by ID or creates a new one.
+func (cm *ConnManager) getOrCreateRoom(roomID string) *Room {
+	cm.lock.Lock()
+	defer cm.lock.Unlock()
+	if room, ok := cm.rooms[roomID]; ok {
+		return room
+	}
+	log.Printf("Creating new room: %s", roomID)
+	room := NewRoom()
+	cm.rooms[roomID] = room
+	return room
+}
+
+// removeRoom deletes a room if it's empty.
+func (cm *ConnManager) removeRoom(roomID string) {
+	cm.lock.Lock()
+	defer cm.lock.Unlock()
+	if room, ok := cm.rooms[roomID]; ok {
+		room.lock.Lock()
+		isHostPresent := room.hostConn != nil
+		room.lock.Unlock()
+		if !isHostPresent {
+			log.Printf("Removing empty room: %s", roomID)
+			delete(cm.rooms, roomID)
+		}
+	}
+}
+
+// handleWebSocket is the main entry point for all new host connections.
 func (cm *ConnManager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Printf("Upgrade error: %v", err)
+	roomID := r.URL.Query().Get("room")
+	if roomID == "" {
+		log.Println("Rejecting connection: missing room ID")
+		http.Error(w, "Room ID is required", http.StatusBadRequest)
 		return
 	}
+
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("Upgrade error for room %s: %v", roomID, err)
+		return
+	}
+
+	room := cm.getOrCreateRoom(roomID)
 
 	// The first message determines the client's role.
 	msgType, p, err := conn.ReadMessage()
 	if err != nil {
-		log.Printf("Error reading role message: %v", err)
+		log.Printf("Room %s: Error reading role message: %v", roomID, err)
 		conn.Close()
 		return
 	}
 
 	if msgType != websocket.TextMessage {
-		log.Println("First message must be a text message for role definition.")
+		log.Printf("Room %s: First message must be a text message for role definition.", roomID)
 		conn.Close()
 		return
 	}
 
 	var msg Message
 	if err := json.Unmarshal(p, &msg); err != nil {
-		log.Printf("Error unmarshaling role message: %v", err)
+		log.Printf("Room %s: Error unmarshaling role message: %v", roomID, err)
 		conn.Close()
 		return
 	}
 
 	if msg.Type == "register_host" {
-		cm.registerHost(conn)
+		room.registerHost(conn, roomID, func() { cm.removeRoom(roomID) })
 	} else if msg.Type == "data_conn" {
-		// This is a data connection from the host, for a specific peer.
 		var payload NewPeerPayload
 		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
-			log.Printf("Error unmarshaling data_conn payload: %v", err)
+			log.Printf("Room %s: Error unmarshaling data_conn payload: %v", roomID, err)
 			conn.Close()
 			return
 		}
-		cm.pairConnections(payload.PeerID, conn)
+		room.pairConnections(payload.PeerID, conn)
 	} else {
-		log.Printf("Unknown role type: %s", msg.Type)
+		log.Printf("Room %s: Unknown role type: %s", roomID, msg.Type)
 		conn.Close()
 	}
 }
 
-func (cm *ConnManager) registerHost(conn *websocket.Conn) {
-	cm.connLock.Lock()
-	if cm.hostConn != nil {
-		cm.connLock.Unlock()
-		log.Println("Host already registered. Rejecting new host.")
+func (room *Room) registerHost(conn *websocket.Conn, roomID string, onHostDisconnect func()) {
+	room.lock.Lock()
+	if room.hostConn != nil {
+		room.lock.Unlock()
+		log.Printf("Room %s: Host already registered. Rejecting new host.", roomID)
 		conn.Close()
 		return
 	}
-	cm.hostConn = conn
-	cm.connLock.Unlock()
-	log.Println("Host registered successfully.")
+	room.hostConn = conn
+	room.lock.Unlock()
+	log.Printf("Room %s: Host registered successfully.", roomID)
+
+	defer func() {
+		room.lock.Lock()
+		room.hostConn = nil
+		// Close all associated peer connections
+		for peerID, peerConn := range room.peers {
+			log.Printf("Room %s: Closing peer connection %s due to host disconnect.", roomID, peerID)
+			peerConn.Close()
+		}
+		room.peers = make(map[string]*websocket.Conn) // Clear the peers map
+		room.lock.Unlock()
+		log.Printf("Room %s: Host disconnected and room cleaned up.", roomID)
+		onHostDisconnect()
+	}()
 
 	// Goroutine to send application-level pings
 	go func() {
@@ -102,104 +165,126 @@ func (cm *ConnManager) registerHost(conn *websocket.Conn) {
 		defer ticker.Stop()
 		pingMsg, _ := json.Marshal(Message{Type: "ping"})
 
-		for range ticker.C {
+		for {
+			// Check if host is still connected before proceeding
+			room.lock.Lock()
+			hostExists := room.hostConn != nil
+			room.lock.Unlock()
+			if !hostExists {
+				return
+			}
+
+			<-ticker.C
+
+			// Use the dedicated write lock to send the ping
+			room.hostWriteLock.Lock()
 			conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := conn.WriteMessage(websocket.TextMessage, pingMsg); err != nil {
-				log.Println("Failed to send app-level ping to host, assuming it's dead.")
-				conn.Close()
+			err := conn.WriteMessage(websocket.TextMessage, pingMsg)
+			room.hostWriteLock.Unlock()
+
+			if err != nil {
+				log.Printf("Room %s: Failed to send app-level ping to host, assuming it's dead.", roomID)
+				conn.Close() // This will trigger the defer in registerHost and clean up the room
 				return
 			}
 		}
 	}()
 
-	// Keep the host control connection alive by reading messages.
 	for {
 		conn.SetReadDeadline(time.Now().Add(pongWait))
 		msgType, p, err := conn.ReadMessage()
 		if err != nil {
-			log.Printf("Host control connection closed: %v", err)
-			cm.connLock.Lock()
-			cm.hostConn = nil
-			cm.connLock.Unlock()
+			log.Printf("Room %s: Host control connection closed: %v", roomID, err)
 			break
 		}
 
 		if msgType == websocket.TextMessage {
 			var msg Message
 			if err := json.Unmarshal(p, &msg); err == nil && msg.Type == "pong" {
-				// It's a pong, deadline is reset by the next loop iteration. Continue.
 				continue
 			}
 		}
-		// Any other message on the control channel is unexpected.
-		log.Printf("Received unexpected message on host control channel: %s", p)
+		log.Printf("Room %s: Received unexpected message on host control channel: %s", roomID, p)
 	}
 }
 
-// registerPeer is called when a peer connects.
-func (cm *ConnManager) registerPeer(conn *websocket.Conn) {
+func (room *Room) registerPeer(conn *websocket.Conn, roomID string) {
 	peerID := "peer_" + time.Now().Format("20060102150405.000000")
-	log.Printf("Peer connected with ID: %s", peerID)
+	log.Printf("Room %s: Peer connected with ID: %s", roomID, peerID)
 
-	cm.connLock.Lock()
-	if cm.hostConn == nil {
-		cm.connLock.Unlock()
-		log.Println("No host available. Rejecting peer.")
+	room.lock.Lock()
+	if room.hostConn == nil {
+		room.lock.Unlock()
+		log.Printf("Room %s: No host available. Rejecting peer.", roomID)
 		conn.Close()
 		return
 	}
 
-	cm.peers[peerID] = conn
+	room.peers[peerID] = conn
+	hostConnForWrite := room.hostConn
+	room.lock.Unlock() // Release lock before writing to network
 
 	payload, _ := json.Marshal(NewPeerPayload{PeerID: peerID})
 	msg, _ := json.Marshal(Message{Type: "new_peer", Payload: payload})
 
-	err := cm.hostConn.WriteMessage(websocket.TextMessage, msg)
-	cm.connLock.Unlock()
+	// Use the dedicated write lock to notify the host
+	room.hostWriteLock.Lock()
+	err := hostConnForWrite.WriteMessage(websocket.TextMessage, msg)
+	room.hostWriteLock.Unlock()
 
 	if err != nil {
-		log.Printf("Failed to notify host about new peer %s: %v", peerID, err)
+		log.Printf("Room %s: Failed to notify host about new peer %s: %v", roomID, peerID, err)
 		conn.Close()
-		cm.connLock.Lock()
-		delete(cm.peers, peerID)
-		cm.connLock.Unlock()
+		// Re-acquire lock to safely remove peer from map
+		room.lock.Lock()
+		delete(room.peers, peerID)
+		room.lock.Unlock()
 	}
 }
 
-func (cm *ConnManager) pairConnections(peerID string, hostDataConn *websocket.Conn) {
-	cm.connLock.Lock()
-	peerConn, ok := cm.peers[peerID]
+func (room *Room) pairConnections(peerID string, hostDataConn *websocket.Conn) {
+	room.lock.Lock()
+	peerConn, ok := room.peers[peerID]
 	if !ok {
-		cm.connLock.Unlock()
+		room.lock.Unlock()
 		log.Printf("Peer %s not found for pairing.", peerID)
 		hostDataConn.Close()
 		return
 	}
-	// Remove from pending peers map
-	delete(cm.peers, peerID)
-	cm.connLock.Unlock()
+	delete(room.peers, peerID)
+	room.lock.Unlock()
 
 	log.Printf("Pairing host data connection with peer %s", peerID)
 
 	var hostWriteMutex, peerWriteMutex sync.Mutex
-
-	// Start application-level pinger for both data connections
 	go appPinger(hostDataConn, &hostWriteMutex)
 	go appPinger(peerConn, &peerWriteMutex)
-
-	// Start forwarding binary data
 	go forward(hostDataConn, peerConn, "Host -> Peer ("+peerID+")", &peerWriteMutex)
 	go forward(peerConn, hostDataConn, "Peer -> Host ("+peerID+")", &hostWriteMutex)
 }
 
 // handlePeer is the entry point for peer connections.
 func (cm *ConnManager) handlePeer(w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Printf("Upgrade error for peer: %v", err)
+	roomID := r.URL.Query().Get("room")
+	if roomID == "" {
+		log.Println("Rejecting peer connection: missing room ID")
+		http.Error(w, "Room ID is required", http.StatusBadRequest)
 		return
 	}
-	cm.registerPeer(conn)
+
+	room := cm.getOrCreateRoom(roomID)
+	if room == nil {
+		log.Printf("Could not get or create room %s", roomID)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("Upgrade error for peer in room %s: %v", roomID, err)
+		return
+	}
+	room.registerPeer(conn, roomID)
 }
 
 func main() {
