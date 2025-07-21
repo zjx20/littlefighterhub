@@ -78,9 +78,44 @@ GOOS=windows GOARCH=amd64 go build -o proxy-client.exe ./cmd/proxy-client
     ```
 2.  然后，启动游戏，在游戏里输入服务器地址时，输入 `--local` 参数指定的地址，即 `127.0.0.1:8081`。
 
-## 使用示例（使用 netcat 测试）
+## 游戏联机实战
 
-这个例子需要4个终端窗口来模拟真实场景。
+这是一个更贴近实际游戏场景的联机步骤说明。
+
+1.  **部署服务端**
+    将编译好的 `proxy-server` 文件部署到有公网 IP 的服务器上，并运行它。假设服务器的可访问地址是 `your-server.com`。
+    ```bash
+    ./proxy-server
+    ```
+
+2.  **房主 (Host) 操作**
+    -   首先，在游戏内启动游戏自带的 Room Server。这通常会在本地 `127.0.0.1:8080` 监听。
+    -   然后，在本地启动 `proxy-client`，并设置为 `host` 模式，指向你的游戏 Room Server。
+        ```bash
+        # --server 指向你的公网代理服务
+        # --game 指向你本地的游戏Room Server地址
+        # --room 设置一个房间密码，例如 "12345"
+        ./proxy-client --mode=host --server=your-server.com:28080 --game=127.0.0.1:8080 --room=12345
+        ```
+
+3.  **其他玩家 (Peer) 操作**
+    -   在本地启动 `proxy-client`，并设置为 `peer` 模式。
+        ```bash
+        # --server 同样指向公网代理服务
+        # --local 指定一个本地端口，游戏将通过这个端口连接
+        # --room 必须和房主设置的房间密码完全一致
+        ./proxy-client --mode=peer --server=your-server.com:28080 --local=127.0.0.1:8080 --room=12345
+        ```
+
+4.  **进入游戏**
+    -   现在，**所有玩家**（包括房主）都可以在游戏的多人联机界面输入 `localhost` 和 `8080` 端口来加入游戏。
+    -   **原理**:
+        -   对于房主，游戏直接连接到本地 `127.0.0.1:8080` 上由游戏自己启动的 Room Server。
+        -   对于其他玩家，游戏连接到本地 `127.0.0.1:8080` 上由 `proxy-client` 监听的端口，`proxy-client` 会将所有数据通过公网的 `proxy-server` 转发给房主的 `proxy-client`，最终到达房主的游戏 Room Server。
+
+## 通用测试（使用 netcat）
+
+这个例子需要多个终端窗口来模拟真实场景。
 
 1.  **终端 A: 启动代理服务端**
     ```bash
