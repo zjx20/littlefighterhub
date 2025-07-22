@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>WebSocket</title>
+</head>
+<body>
+    <h1>Test WebSocket</h1>
+    <input type="text" id="wsAddr" placeholder="wss://your-domain/ws-host?room=test" style="width: 400px;">
+    <button id="connectBtn">Connect</button>
+    <hr>
+    <input type="text" id="sendTxt">
+    <button id="sendBtn">发送</button>
+    <div id="recv"></div>
+    <script type="text/javascript">
+        var websocket;
+
+        document.getElementById("connectBtn").onclick = function() {
+            var wsAddr = document.getElementById("wsAddr").value;
+            if (!wsAddr) {
+                alert("Please enter a WebSocket address.");
+                return;
+            }
+
+            websocket = new WebSocket(wsAddr);
+
+            websocket.onopen = function(){
+                console.log("websocket open");
+                document.getElementById("recv").innerHTML = "Connected";
+
+                websocket.send('{"type":"register_host"}');
+                setInterval(function(){
+                    if (websocket.readyState === WebSocket.OPEN) {
+                        websocket.send('{"type":"pong"}');
+                    }
+                }, 3000);
+            };
+            websocket.onclose = function(){
+                console.log('websocket close');
+                document.getElementById("recv").innerHTML = "Disconnected";
+            };
+            websocket.onmessage = function(e){
+                console.log(e.data);
+                document.getElementById("recv").innerHTML = e.data;
+            };
+        };
+
+        document.getElementById("sendBtn").onclick = function(){
+            if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+                alert("WebSocket is not connected.");
+                return;
+            }
+            var txt = document.getElementById("sendTxt").value;
+            websocket.send(txt);
+        };
+    </script>
+</body>
+</html>

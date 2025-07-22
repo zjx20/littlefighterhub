@@ -158,6 +158,31 @@ GOOS=windows GOARCH=amd64 GOPROXY=goproxy.cn go build -o proxy-client.exe ./cmd/
 
 现在，在**终端 E** 和**终端 B** 之间可以进行实时的双向通信。
 
+## 使用浏览器测试 WebSocket
+
+项目提供了一个 `tests/test_ws.html` 文件，可以用来直接在浏览器中测试 `proxy-server` 的 `host` 端 WebSocket 连接。
+
+1.  **启动代理服务端**
+    在你的服务器或本地启动 `proxy-server`。
+    ```bash
+    ./proxy-server -port 8095
+    ```
+
+2.  **用浏览器打开测试页面**
+    直接在你的电脑上用浏览器打开 `tests/test_ws.html` 文件。
+
+3.  **连接到服务**
+    -   在页面的输入框中，填入你的 `proxy-server` 的 `host` 端地址。格式为 `ws://<your-server-ip>:8095/ws-host?room=<your-room-id>`。
+    -   例如，如果服务运行在本地，你可以填入：`ws://localhost:8095/ws-host?room=test`。
+    -   点击 "Connect" 按钮。
+
+4.  **观察结果**
+    -   如果连接成功，页面会显示 "Connected"。
+    -   浏览器开发者工具的控制台（Console）会打印出 `websocket open` 日志，并开始定期发送 `pong` 消息。
+    -   你可以在下方的输入框中发送自定义消息进行测试。
+
+这个测试页面模拟了一个 `host` 客户端的行为，对于快速验证服务端是否正常工作非常有用。
+
 ## 命令行参数
 
 ### `proxy-server`
