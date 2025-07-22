@@ -25,7 +25,7 @@ type NewPeerPayload struct {
 
 func main() {
 	mode := flag.String("mode", "peer", "Set mode to 'host' or 'peer'")
-	serverAddr := flag.String("server", "localhost:28080", "Proxy server address (e.g., wss://your.server.com)")
+	serverAddr := flag.String("server", "localhost:8095", "Proxy server address (e.g., wss://your.server.com)")
 	gameAddr := flag.String("game", "localhost:8080", "Game server address (for host mode)")
 	localAddr := flag.String("local", "localhost:8081", "Local address for game client to connect (for peer mode)")
 	roomID := flag.String("room", "default", "Room ID to join")

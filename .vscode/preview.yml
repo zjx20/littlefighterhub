@@ -1,0 +1,10 @@
+# Cloud Studio 预览配置
+autoOpen: true # 打开工作空间时是否自动开启所有应用的预览
+apps:
+- port: 8095 # 应用的端口
+  run: bash -c "GOPROXY=goproxy.cn go build -o proxy-server ./cmd/proxy-server && ./proxy-server" # 应用的启动命令
+  root: ./littlefighterhub # 应用的启动目录
+  name: lf2-proxy # 应用名称
+  description: lf2 联机代理 # 应用描述
+  autoOpen: true # 打开工作空间时是否自动开启预览（优先级高于根级 autoOpen）
+  autoPreview: true # 是否自动打开预览, 若无则默认为true

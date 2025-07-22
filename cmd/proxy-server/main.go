@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"sync"
@@ -288,14 +290,17 @@ func (cm *ConnManager) handlePeer(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	port := flag.Int("port", 8095, "Port to listen on")
+	flag.Parse()
+
 	manager := NewConnManager()
 	// The host connects here to register and establish a data connection.
 	http.HandleFunc("/ws-host", manager.handleWebSocket)
 	// Peers connect here.
 	http.HandleFunc("/ws-peer", manager.handlePeer)
 
-	log.Println("Proxy server started on :28080")
-	err := http.ListenAndServe(":28080", nil)
+	log.Printf("Proxy server started on :%d", *port)
+	err := http.ListenAndServe(fmt.Sprintf(":%d", *port), nil)
 	if err != nil {
 		log.Fatal("ListenAndServe: ", err)
 	}
