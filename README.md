@@ -1,4 +1,39 @@
-# Little Fighter Hub - 游戏联机代理
+# Little Fighter Hub - 游戏联机中心
+
+本项目提供了两种联机方案，以满足不同用户的需求。
+
+1.  **Room Server 模式 (推荐)**: 一个功能完整的房间服务器，客户端可以直接连接。这是最简单、最直接的联机方式。
+2.  **Proxy 模式 (备用)**: 一个 TCP-over-WebSocket 代理工具，用于将游戏自带的 Room Server 暴露到公网。此方案较为复杂，但提供了更大的灵活性。
+
+---
+
+## 方案一: Room Server 模式 (推荐)
+
+我们实现了一个兼容 LF2 原版网络协议的房间服务器。所有玩家只需连接到这个服务器即可联机。
+
+### 编译
+
+```bash
+# 编译 Room Server
+go build -o room-server ./cmd/room-server
+```
+
+### 使用方法
+
+1.  **启动 Room Server**
+    将编译好的 `room-server` 文件部署到有公网 IP 的服务器上，并运行它。
+    ```bash
+    # 服务器将默认在 8080 端口上运行
+    ./room-server
+    ```
+    假设服务器的地址是 `your-server.com`。
+
+2.  **玩家连接**
+    所有玩家（包括房主）在游戏的多人联机界面，直接输入服务器地址 `your-server.com` 和端口 `8080` 即可加入游戏大厅。
+
+---
+
+## 方案二: Proxy 模式 (备用)
 
 这是一个简单的TCP-over-WebSocket代理工具，旨在帮助不在同一局域网的玩家进行游戏联机。
 
@@ -7,20 +42,18 @@
 - 每个玩家（包括房主）都在本地运行一个**代理客户端（Proxy Client）**。
 - **主机端**的代理会建立一个到服务端的“控制连接”来接收指令，并为每个新玩家建立独立的“数据连接”。
 - **玩家端**的代理则负责将本地游戏的数据转发到服务端。
-- **应用层心跳**: 服务端与客户端之间的所有连接都使用基于JSON文本消息的自定义心跳（`{"type":"ping"}`/`{"type":"pong"}`），以确保在复杂的网络环境下也能保持连接活性，并及时清理断开的连接。
+- **应用层心跳**: 服务端与客户端之间的所有连接都使用基于JSON文本消息的自定义心"ping"}`/`{"type":"pong"}`），以确保在复杂的网络环境下也能保持连接活性，并及时清理断开的连接。
 
-## 编译
+### 编译
 
 确保你的机器上安装了 Go 环境 (版本 >= 1.18)。
 
 ```bash
-# 编译服务端
-# GOPROXY=goproxy.cn 使用 Go 代理加速编译
-GOPROXY=goproxy.cn go build -o proxy-server ./cmd/proxy-server
+# 编译代理服务端
+go build -o proxy-server ./cmd/proxy-server
 
-# 编译客户端
-# GOPROXY=goproxy.cn 使用 Go 代理加速编译
-GOPROXY=goproxy.cn go build -o proxy-client ./cmd/proxy-client
+# 编译代理客户端
+go build -o proxy-client ./cmd/proxy-client
 ```
 
 编译后，你会在项目根目录下看到 `proxy-server` 和 `proxy-client` 两个可执行文件。
@@ -81,7 +114,7 @@ GOOS=windows GOARCH=amd64 GOPROXY=goproxy.cn go build -o proxy-client.exe ./cmd/
         -   对于房主，游戏直接连接到本地 `127.0.0.1:8080` 上由游戏自己启动的 Room Server。
         -   对于其他玩家，游戏连接到本地 `127.0.0.1:8080` 上由 `proxy-client` 监听的端口，`proxy-client` 会将所有数据通过公网的 `proxy-server` 转发给房主的 `proxy-client`，最终到达房主的游戏 Room Server。
 
-## 通用测试（使用 netcat）
+### 通用测试（使用 netcat）
 
 这个例子需要多个终端窗口来模拟真实场景。
 
@@ -117,7 +150,7 @@ GOOS=windows GOARCH=amd64 GOPROXY=goproxy.cn go build -o proxy-client.exe ./cmd/
 
 现在，在**终端 E** 和**终端 B** 之间可以进行实时的双向通信。
 
-## 使用浏览器测试 WebSocket
+### 使用浏览器测试 WebSocket
 
 项目提供了一个 `tests/test_ws.html` 文件，可以用来直接在浏览器中测试 `proxy-server` 的 `host` 端 WebSocket 连接。
 
@@ -142,13 +175,13 @@ GOOS=windows GOARCH=amd64 GOPROXY=goproxy.cn go build -o proxy-client.exe ./cmd/
 
 这个测试页面模拟了一个 `host` 客户端的行为，对于快速验证服务端是否正常工作非常有用。
 
-## 命令行参数
+### 命令行参数
 
-### `proxy-server`
+#### `proxy-server`
 
 - `-port`: 指定代理服务监听的端口。默认为 `8095`。
 
-### `proxy-client`
+#### `proxy-client`
 
 - `--mode`: 客户端模式。
   - `host`: 主机模式，给游戏房主使用。

@@ -1,5 +1,7 @@
 # LF2 联机网络协议分析
 
+Room Server 使用 WebSocket 与客户端进行双向通信。这里的客户端其实有两种，一种是 Room Server 自带的 WebUI 界面，另一种是游戏客户端。
+
 ## Room Server WebUI
 
 启动 room server 后，在浏览器访问 http://localhost:8080/ 就能打开同款 webui，方便分析这部分的交互协议。
@@ -198,7 +200,7 @@ STAGE_1_EASY,STAGE_1_NORMAL,STAGE_1_DIFFICULT,STAGE_1_CRAZY,STAGE_2_EASY,STAGE_2
 格式为 `JOIN\n<room id>\n<player name>\n<p1 name>\n<p2 name>\n<p3 name>\n<p4 name>\n<achievements>`。
 
 
-服务端广播 PLAYER_LIST 消息：
+服务端广播 PLAYER_LIST 消息给房间内所有玩家（包括新加入的玩家）：
 
 ```
 PLAYER_LIST
@@ -222,30 +224,34 @@ PLAYER_LIST 字段大致是 `<room id>\n<latency>\n¶<player 1>\n¶<player 2>\n.
 
 ### CHANGE_LATENCY 命令
 
-玩家在 webui 上调整 latency，就会触发 CHANGE_LATENCY 命令，带有一个数字参数，表示新的latency值。
+玩家在游戏界面中调整 latency，就会触发 CHANGE_LATENCY 命令，带有一个数字参数，表示新的latency值。
 
 ```
 CHANGE_LATENCY
 4
 ```
 
-服务端广播 PLAYER_LIST 消息。
+服务端广播 PLAYER_LIST 消息，里面会带上新的 latency 值。
 
 ### LEAVE 命令
 
-玩家在 webui 上点击 “离开房间”，会触发 LEAVE 命令，参数是 room id。
+玩家在游戏界面中点击 “离开房间”，会触发 LEAVE 命令，参数是 room id。
 
 ```
 LEAVE
 2
 ```
 
-服务端广播 LEFT_ROOM 消息。
+服务端回复 LEFT_ROOM 消息发出命令的玩家。
 
 ```
 LEFT_ROOM
 2
 ```
+
+`2` 是 room id。
+
+然后广播 PLAYER_LIST 消息给房间内其他玩家。
 
 ### START 命令
 
@@ -363,7 +369,7 @@ Y
 left the Room.
 ```
 
-然后推送 PLAYER_LIST 消息。
+然后广播 PLAYER_LIST 消息。
 
 ## 关于 Latency 设定
 
@@ -404,8 +410,8 @@ left the Room.
         *   需要处理房间满员、游戏已开始或房间不存在等异常情况（具体响应待定）。
     *   `LEAVE`:
         *   从指定房间移除玩家。
-        *   向该房间的所有玩家广播 `LEFT_ROOM` 消息，告知玩家ID。
-        *   （可选）可以紧接着广播更新后的 `PLAYER_LIST`。
+        *   向发出请求的玩家发送 `LEFT_ROOM` 消息。
+        *   紧接着广播更新后的 `PLAYER_LIST`。
     *   `START`:
         *   将房间状态标记为 `STARTED`。
         *   向该房间的所有玩家广播 `ROOM_NOW_STARTED` 消息。

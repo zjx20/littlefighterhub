@@ -1,4 +1,4 @@
-module littlefighterhub
+module github.com/zjx20/littlefighterhub
 
 go 1.20
 
