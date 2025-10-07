@@ -23,19 +23,25 @@ type Player struct {
 type Room struct {
 	ID      int
 	State   string // VACANT, LOBBY, STARTED
-	Latency int
-	Time    time.Time
 	Players map[int]*Player
+	Time    time.Time
+	Latency int
 	Mu      sync.Mutex
+
+	// For synchronizing frames at the beginning of a match
+	IsSynchronizing bool
+	SyncFrameBuffer map[int][][]byte
 }
 
 func NewRoom(id int) *Room {
 	return &Room{
-		ID:      id,
-		State:   "VACANT",
-		Latency: 3,
-		Time:    time.Now(),
-		Players: make(map[int]*Player),
+		ID:              id,
+		State:           "VACANT",
+		Players:         make(map[int]*Player),
+		Time:            time.Now(),
+		Latency:         3,
+		IsSynchronizing: false,
+		SyncFrameBuffer: make(map[int][][]byte),
 	}
 }
 

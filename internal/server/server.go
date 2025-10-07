@@ -49,6 +49,7 @@ func (s *Server) NextUserID() int {
 }
 
 func (s *Server) HandleConnections(w http.ResponseWriter, r *http.Request) {
+	log.Printf("Handle new connection from %s, requested host: %s\n", r.RemoteAddr, r.Host)
 	ws, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println("Upgrade error:", err)
@@ -304,7 +305,12 @@ func (s *Server) handleStart(player *room.Player) {
 	defer playerRoom.Mu.Unlock()
 
 	playerRoom.State = "STARTED"
-	log.Printf("Room %d started by player %d", playerRoom.ID, player.ID)
+	playerRoom.IsSynchronizing = true
+	playerRoom.SyncFrameBuffer = make(map[int][][]byte)
+	for _, p := range playerRoom.Players {
+		playerRoom.SyncFrameBuffer[p.ID] = make([][]byte, 0)
+	}
+	log.Printf("Room %d started by player %d, synchronizing...", playerRoom.ID, player.ID)
 
 	// Broadcast ROOM_NOW_STARTED message
 	startMsg := []byte(fmt.Sprintf("ROOM_NOW_STARTED\n%d\n%d", playerRoom.ID, time.Since(playerRoom.Time).Milliseconds()))
@@ -352,28 +358,69 @@ func (s *Server) handleChat(player *room.Player, parts []string) {
 func (s *Server) handleFrame(player *room.Player, msg []byte) {
 	var playerRoom *room.Room
 	for _, r := range s.Rooms {
-		r.Mu.Lock()
+		// A quick check without lock
 		if _, ok := r.Players[player.ID]; ok {
 			playerRoom = r
-		}
-		r.Mu.Unlock()
-		if playerRoom != nil {
 			break
 		}
 	}
 
 	if playerRoom == nil {
-		log.Printf("Player %d is not in any room", player.ID)
+		// Player not in any room, might be a leftover message.
 		return
 	}
 
 	playerRoom.Mu.Lock()
 	defer playerRoom.Mu.Unlock()
 
-	for _, p := range playerRoom.Players {
-		if p.ID != player.ID {
+	if !playerRoom.IsSynchronizing {
+		// Regular frame forwarding
+		s.broadcastFrame(playerRoom, player.ID, msg)
+		return
+	}
+
+	// Synchronization logic
+	if _, ok := playerRoom.SyncFrameBuffer[player.ID]; ok {
+		playerRoom.SyncFrameBuffer[player.ID] = append(playerRoom.SyncFrameBuffer[player.ID], msg)
+	}
+
+	// Check if all players have sent enough frames
+	allReady := true
+	if len(playerRoom.Players) < 2 { // No need to sync for single player
+		allReady = true
+	} else {
+		for _, p := range playerRoom.Players {
+			if len(playerRoom.SyncFrameBuffer[p.ID]) < playerRoom.Latency {
+				allReady = false
+				break
+			}
+		}
+	}
+
+	if allReady {
+		log.Printf("Room %d synchronized. Releasing frame buffer.", playerRoom.ID)
+		playerRoom.IsSynchronizing = false
+
+		// Release all buffered frames in a round-robin fashion to ensure fairness
+		log.Printf("Broadcasting buffered frames for room %d in round-robin order.", playerRoom.ID)
+		for i := 0; i < playerRoom.Latency; i++ {
+			for _, p := range playerRoom.Players {
+				// Ensure the player and their frame buffer for this index exist
+				if frames, ok := playerRoom.SyncFrameBuffer[p.ID]; ok && i < len(frames) {
+					s.broadcastFrame(playerRoom, p.ID, frames[i])
+				}
+			}
+		}
+		// Clear the buffer
+		playerRoom.SyncFrameBuffer = nil
+	}
+}
+
+func (s *Server) broadcastFrame(r *room.Room, senderID int, msg []byte) {
+	for _, p := range r.Players {
+		if p.ID != senderID {
 			if err := p.Conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-				log.Printf("Error broadcasting to player %d: %v", p.ID, err)
+				log.Printf("Error broadcasting frame to player %d: %v", p.ID, err)
 			}
 		}
 	}
@@ -485,11 +532,5 @@ func (s *Server) broadcastToOthers(player *room.Player, msg []byte) {
 	playerRoom.Mu.Lock()
 	defer playerRoom.Mu.Unlock()
 
-	for _, p := range playerRoom.Players {
-		if p.ID != player.ID {
-			if err := p.Conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-				log.Printf("Error broadcasting to player %d: %v", p.ID, err)
-			}
-		}
-	}
+	s.broadcastFrame(playerRoom, player.ID, msg)
 }
